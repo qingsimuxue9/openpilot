@@ -10,6 +10,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.car.interfaces import ACCEL_MIN
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
+from openpilot.common.logger import logger
 
 if __name__ == '__main__':  # generating code
   from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -55,7 +56,7 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 6.0
+STOP_DISTANCE = 4.0
 
 def get_jerk_factor(personality=custom.LongitudinalPersonalitySP.standard):
   if personality==custom.LongitudinalPersonalitySP.relaxed:
@@ -81,6 +82,24 @@ def get_T_FOLLOW(personality=custom.LongitudinalPersonalitySP.standard):
     return 1.0
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+# Last updated: September 29, 2024
+def get_dynamic_personality(v_ego, personality=custom.LongitudinalPersonalitySP.standard):
+  if personality==custom.LongitudinalPersonalitySP.relaxed:
+    x_vel =  [0,    14.,   27.7]
+    y_dist = [1.75, 1.75,  2.50]
+  elif personality==custom.LongitudinalPersonalitySP.standard:
+    x_vel =  [0,    14.,   27.7]
+    y_dist = [1.25, 1.45,  1.75]
+  elif personality==custom.LongitudinalPersonalitySP.moderate:
+    x_vel =  [0,    14.,   27.7]
+    y_dist = [1.0,  1.25,  1.50]
+  elif personality==custom.LongitudinalPersonalitySP.aggressive:
+    x_vel =  [0,    14.,   27.7]
+    y_dist = [0.6,  0.8,   1.0]
+  else:
+    raise NotImplementedError("Dynamic personality not supported")
+  return np.interp(v_ego, x_vel, y_dist)
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
@@ -231,6 +250,7 @@ class LongitudinalMpc:
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
     self.reset()
     self.source = SOURCES[2]
+    self.frame = 0
 
     self.e2e_x = np.zeros(13, dtype=np.float64)
 
@@ -339,9 +359,13 @@ class LongitudinalMpc:
     self.max_a = max_a
 
   def update(self, radarstate, v_cruise, x, v, a, j, personality=custom.LongitudinalPersonalitySP.standard):
-    t_follow = get_T_FOLLOW(personality)
+    #t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
+    t_follow = get_dynamic_personality(v_ego, personality)
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
+
+    #if self.frame % 100 == 0:
+    #  logger.log("long_mpc", v_ego=v_ego, t_follow=t_follow, v_cruise=v_cruise, lead_status=self.status)
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
@@ -426,6 +450,8 @@ class LongitudinalMpc:
       if any((lead_1_obstacle - get_safe_obstacle_distance(self.x_sol[:,1], t_follow))- self.x_sol[:,0] < 0.0) and \
          (lead_1_obstacle[0] - lead_0_obstacle[0]):
         self.source = 'lead1'
+
+    self.frame += 1
 
   def run(self):
     # t0 = time.monotonic()
