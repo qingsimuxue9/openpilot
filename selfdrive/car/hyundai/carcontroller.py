@@ -78,7 +78,7 @@ class CarController(CarControllerBase):
     self.accel_limit_org = 0.0
     self.normal_log_num = 0
     self.pcmCruiseSpeed_last = False
-    self.log_enable = True
+    self.log_enable = False  # 是否允许日志记录
     self.gasPressed = False
     self.gasPressed_last = False
     self.gas_change_smooth = False
@@ -119,7 +119,7 @@ class CarController(CarControllerBase):
     self.m_tsc = 0
     self.steady_speed = 0
     self.lead_distance = 0
-    self.hkg_can_smooth_stop = self.param_s.get_bool("HkgSmoothStop")
+    #self.hkg_can_smooth_stop = self.param_s.get_bool("HkgSmoothStop")
     self.accel_eco = self.param_s.get_bool("SubaruManualParkingBrakeSng") #ECO加速模式
     self.cruise_smooth_dis = self.param_s.get_bool("StockLongToyota") #巡航平滑
     self.custom_accel_limit = self.param_s.get_bool("LkasToggle") #用户限制加速度
@@ -135,6 +135,10 @@ class CarController(CarControllerBase):
     self.accel_raw = 0
     self.accel_val = 0
     self.accel_last_jerk = 0
+    self.base_time = 0.13  # 基础平滑时间 0.1(加速约1.57秒) 0.13(加速约2秒)
+    self.k1 = 0.04  # 速度影响因子 0.03(加速约1.57秒) 0.04(加速约1.57秒)
+    self.brake_factor = 0.4  # 减速时的快速响应因子(减速约0.46s)
+    self.last_accel = 0.0  # 记录上一次的加速度
 
     self.lkas_toggle = self.param_s.get_bool("LkasToggle")
     logger.log("lkas", LkasToggle=self.lkas_toggle)
@@ -443,6 +447,8 @@ class CarController(CarControllerBase):
         accel = clip(actuators.accel, CarControllerParams.ACCEL_MIN, self.accel_limit) # 使用 clip 限制加速度，确保加速度在指定范围内
         self.clip_accel = True
 
+      # 通过算法对加速度进行平滑
+      #accel = self.smooth_accel(accel, speed, DT_CTRL)
       self.make_jerk(CS, accel, actuators)
 
     # CAN-FD platforms
@@ -517,9 +523,6 @@ class CarController(CarControllerBase):
         self.lead_distance = self.calculate_lead_distance(hud_control)
 
       if self.frame % 2 == 0 and self.CP.openpilotLongitudinalControl:
-        if self.hkg_can_smooth_stop:
-          stopping = stopping and CS.out.vEgoRaw < 0.05
-
         # TODO: unclear if this is needed
         jerk = 3.0 if actuators.longControlState == LongCtrlState.pid else 1.0
         use_fca = self.CP.flags & HyundaiFlags.USE_FCA.value
@@ -797,3 +800,20 @@ class CarController(CarControllerBase):
       accel_limit = low_limits["accel"] + (high_limits["accel"] - low_limits["accel"]) * ratio
 
     return jerk, accel_limit
+
+  def smooth_accel(self, accel, speed, dt=0.01):  # 默认 dt = 0.01s (OpenPilot)
+    # 计算基础平滑时间
+    smoothing_time = self.base_time * (1 + speed * self.k1)
+
+    # 如果加速度在减少（减速），缩短平滑时间
+    if accel < self.last_accel:
+      smoothing_time *= self.brake_factor
+
+    # 计算平滑系数
+    alpha = dt / (smoothing_time + dt)
+
+    # 低通滤波
+    smoothed_accel = (1 - alpha) * self.last_accel + alpha * accel
+    self.last_accel = smoothed_accel  # 记录当前平滑加速度
+
+    return smoothed_accel
