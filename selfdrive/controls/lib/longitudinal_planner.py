@@ -201,7 +201,8 @@ class LongitudinalPlanner:
     v_cruise_kph = min(sm['controlsState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     v_ego_kph = v_ego * CV.MS_TO_KPH
-	
+
+    self.disable_carrot = False
     car_state = sm['carState']
     if not car_state.cruiseState.enabled:
       self.disable_carrot = True
